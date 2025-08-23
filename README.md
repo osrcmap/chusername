@@ -1,5 +1,7 @@
 # chusername
 
+Change user's login name (user name).
+
 ## Warning
 From [Users_and_groups#Change_a_user's_login_name_or_home_directory](https://wiki.archlinux.org/title/Users_and_groups#Change_a_user's_login_name_or_home_directory) 
 
