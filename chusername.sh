@@ -33,11 +33,13 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 
+# unsafe
 # usermod and groupmod automatically manage changes to some /etc/ files
 #for file in $(grep -r -m 1 $old_name /etc/ | cut -d ":" -f 1); do
 #    sed -i "s/$old_name/$new_name/g" $file
 #done
 
+# safe for running rootless containers
 files_to_edit=("/etc/subuid" "/etc/subgid")
 for file in ${files_to_edit[@]}; do
     if grep -q "^${old_name}:" $file; then
@@ -60,4 +62,4 @@ echo "  - Certain Thunderbird addons, like Enigmail, may need to be reinstalled.
 echo "  - Anything on your system (desktop shortcuts, shell scripts, etc.) that uses an absolute path to your home dir (i.e. /home/oldname) will need to be changed to reflect your new name. To avoid these problems in shell scripts, simply use the ~ or \$HOME variables for home directories."
 echo "  - Also do not forget to edit accordingly the configuration files in /etc/ that relies on your absolute path (e.g. Samba, CUPS, so on). A nice way to learn what files you need to update involves using the grep command this way: grep -r old_user *"
 echo "  - Occurrences of old_user in backup files (files with trailing hyphen), such as /etc/group-, /etc/gshadow-, etc., can be safely ignored."
-# echo "  - To run rootless containers, manually edit /etc/subgid and /etc/subuid to match the new_name. Otherwise, occurrences of "old_name" can be safely ignored."
+# echo "  - To run rootless containers, manually edit /etc/subgid and /etc/subuid to match the new_name. Otherwise, occurrences of "old_name" can be safely ignored." 
