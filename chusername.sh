@@ -14,11 +14,11 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 if [[ $# -ne 2 ]]; then
-    die "usage: $0 new_name old_name"
+    die "usage: $0 old_name new_name"
 fi
 
-new_name="$1"
-old_name="$2"
+old_name="$1"
+new_name="$2"
 
 if [[ "$new_name" == "$old_name" ]]; then
     echo "${PROG}: no changes needed"
@@ -29,7 +29,7 @@ fi
 id "$old_name" &>/dev/null || die "user '$old_name' does not exist"
 
 # Verify new name is not already taken
-if getent group "$new_name" &>/dev/null; then
+if grep -q "^${new_name}:" /etc/group; then
     die "there is already a group called '$new_name'"
 fi
 if id "$new_name" &>/dev/null; then
