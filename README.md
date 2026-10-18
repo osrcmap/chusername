@@ -2,7 +2,11 @@
 
 Rename a Linux user's login name, primary group, and home directory in one step.
 
-Handles `/etc/subuid` and `/etc/subgid` for rootless containers. Rolls back automatically on partial failure.
+The primary group is renamed only if it has the same name as the user (e.g. not `users`). The home directory is moved only if it is named after the user, and it stays in the same parent directory (`/srv/old` → `/srv/new`).
+
+Handles `/etc/subuid` and `/etc/subgid` for rootless containers, renames the user's crontab and systemd linger file, and lists sudoers files that still mention the old name. Rolls back automatically on partial failure.
+
+Requires bash and shadow's `usermod`/`groupmod` (on Alpine: `apk add bash shadow`).
 
 Tested on Arch, Debian, Fedora, and Alpine.
 

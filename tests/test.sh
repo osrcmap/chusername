@@ -39,19 +39,15 @@ check_contains() {
     fi
 }
 
-# Create a fake usermod that rejects a specific flag but passes everything
-# else through to the real binary.
-#   $1 — flag to block (e.g. "-l" or "-d")
+# Create a fake usermod that fails when its arguments match a sh case pattern
+# (matched against " $* ") and passes everything else to the real binary.
+#   $1 — pattern, e.g. '*" -l "*' (no single quotes, % or backslashes)
 fake_usermod_script() {
-    local block_flag="$1"
+    local pattern="$1"
     cat <<WRAPPER
         umod=\$(command -v usermod)
-        cp "\$umod" "\${umod}.real"
-        {
-            echo "#!/bin/sh"
-            echo "for a in \\"\\\$@\\"; do [ \\"\\\$a\\" = \\"${block_flag}\\" ] && exit 1; done"
-            echo "exec \\"\${umod}.real\\" \\"\\\$@\\""
-        } > "\$umod"
+        mv "\$umod" "\${umod}.real"
+        printf '#!/bin/sh\ncase " \$* " in $pattern) exit 1;; esac\nexec "%s.real" "\$@"\n' "\$umod" > "\$umod"
         chmod +x "\$umod"
 WRAPPER
 }
@@ -116,8 +112,10 @@ run_tests() {
     # --- happy path ---
     echo "[happy path]"
     output=$(docker run --rm "$image" bash -c '
+        mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/oskkk
         /chusername.sh oskkk newuser || exit 1
 
+        test -f /var/lib/systemd/linger/newuser || { echo "FAIL_LINGER"; exit 1; }
         id newuser > /dev/null 2>&1            || { echo "FAIL_USER"; exit 1; }
         id oskkk > /dev/null 2>&1              && { echo "FAIL_OLD_USER"; exit 1; }
         test -d /home/newuser                  || { echo "FAIL_HOME"; exit 1; }
@@ -139,7 +137,7 @@ run_tests() {
     # --- rollback: usermod -l fails → group must be restored ---
     echo "[rollback: usermod -l failure]"
     output=$(docker run --rm "$image" bash -c "
-        $(fake_usermod_script -l)
+        $(fake_usermod_script '*" -l "*')
 
         /chusername.sh oskkk newuser 2>&1
         # expect failure
@@ -160,7 +158,7 @@ run_tests() {
     # --- rollback: usermod -d fails → user and group must be restored ---
     echo "[rollback: usermod -d failure]"
     output=$(docker run --rm "$image" bash -c "
-        $(fake_usermod_script -d)
+        $(fake_usermod_script '*" -d "*')
 
         /chusername.sh oskkk newuser 2>&1
         # expect failure
@@ -178,6 +176,90 @@ run_tests() {
     check_exit "$rc" 0 "exits 0 (checks pass after rollback)"
     check_contains "$output" "rolled back" "reports rollback"
     check_contains "$output" "ROLLBACK_D_VERIFIED" "user, group, home restored after rollback"
+
+    # --- rollback itself fails → must not claim success ---
+    echo "[rollback failure reported]"
+    output=$(docker run --rm "$image" bash -c "
+        $(fake_usermod_script '*" -d "*|*" -l oskkk "*')
+        /chusername.sh oskkk newuser
+    " 2>&1)
+    rc=$?
+    check_exit "$rc" 1 "exits 1"
+    check_contains "$output" "ROLLBACK FAILED" "reports failed rollback"
+
+    # --- option-like name ---
+    echo "[option-like name]"
+    output=$(docker run --rm "$image" /chusername.sh --help newuser 2>&1)
+    rc=$?
+    check_exit "$rc" 1 "exits 1"
+    check_contains "$output" "must not start with" "rejects leading '-'"
+
+    # --- dotted name must not touch a look-alike user's subuid/subgid ---
+    echo "[dotted name]"
+    output=$(docker run --rm "$image" bash -c '
+        useradd -m johnxdoe && useradd -m john.doe || exit 1
+        for f in /etc/subuid /etc/subgid; do
+            echo "johnxdoe:200000:65536" >> $f
+            echo "john.doe:300000:65536" >> $f
+        done
+        /chusername.sh john.doe jd || exit 1
+
+        for f in /etc/subuid /etc/subgid; do
+            grep -q "^johnxdoe:200000:" $f     || { echo "FAIL_LOOKALIKE $f"; exit 1; }
+            grep -q "^jd:300000:" $f           || { echo "FAIL_RENAMED $f"; exit 1; }
+            grep -q "^jd:200000:" $f           && { echo "FAIL_WRONG_ENTRY $f"; exit 1; }
+        done
+        test -d /home/jd                       || { echo "FAIL_HOME"; exit 1; }
+
+        echo "DOTTED_OK"
+    ' 2>&1)
+    rc=$?
+    check_exit "$rc" 0 "exits 0"
+    check_contains "$output" "DOTTED_OK" "only the renamed user's entries change"
+
+    # --- primary group not named after the user ---
+    echo "[shared primary group]"
+    output=$(docker run --rm "$image" bash -c '
+        grep -q "^users:" /etc/group || groupadd users
+        groupadd bob && useradd -m -g users bob || exit 1
+        /chusername.sh bob bob2 || exit 1
+
+        [ "$(id -gn bob2)" = users ]           || { echo "FAIL_PRIMARY_GROUP"; exit 1; }
+        grep -q "^bob:" /etc/group             || { echo "FAIL_UNRELATED_GROUP_RENAMED"; exit 1; }
+        grep -q "^users:" /etc/group           || { echo "FAIL_USERS_GROUP"; exit 1; }
+        test -d /home/bob2                     || { echo "FAIL_HOME"; exit 1; }
+
+        echo "GROUP_OK"
+    ' 2>&1)
+    rc=$?
+    check_exit "$rc" 0 "exits 0"
+    check_contains "$output" "GROUP_OK" "user renamed, groups untouched"
+
+    # --- home outside /home stays in its parent dir ---
+    echo "[home outside /home]"
+    output=$(docker run --rm "$image" bash -c '
+        mkdir -p /srv && useradd -m -d /srv/carol carol || exit 1
+        /chusername.sh carol carol2 || exit 1
+
+        test -d /srv/carol2                    || { echo "FAIL_HOME"; exit 1; }
+        test ! -e /home/carol2                 || { echo "FAIL_MOVED_TO_HOME"; exit 1; }
+        getent passwd carol2 | grep -q ":/srv/carol2:" || { echo "FAIL_PASSWD"; exit 1; }
+
+        echo "HOME_OK"
+    ' 2>&1)
+    rc=$?
+    check_exit "$rc" 0 "exits 0"
+    check_contains "$output" "HOME_OK" "home moved within /srv"
+
+    # --- sudoers reference is reported ---
+    echo "[sudoers hint]"
+    output=$(docker run --rm "$image" bash -c '
+        mkdir -p /etc/sudoers.d && echo "oskkk ALL=(ALL) ALL" > /etc/sudoers.d/oskkk
+        /chusername.sh oskkk newuser
+    ' 2>&1)
+    rc=$?
+    check_exit "$rc" 0 "exits 0"
+    check_contains "$output" "/etc/sudoers.d/oskkk" "lists sudoers file"
 
     docker rmi "$image" > /dev/null 2>&1
 }
